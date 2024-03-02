@@ -1,98 +1,160 @@
+import os, tempfile
+from pathlib import Path
 
-from langchain_community.embeddings import OllamaEmbeddings
+from langchain.chains import RetrievalQA, ConversationalRetrievalChain
+from langchain.vectorstores import Chroma
+from langchain_groq import ChatGroq
+from langchain_community.document_loaders import DirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.vectorstores import Chroma
 from langchain_community.vectorstores.faiss import FAISS
-from langchain.chains import RetrievalQA
-from langchain_community.llms.ollama import Ollama
-from langchain_core.callbacks import StreamingStdOutCallbackHandler
-import chainlit as cl
-from langchain_community.document_loaders import PyMuPDFLoader
+from langchain_community.embeddings import OllamaEmbeddings
+from langchain.memory import ConversationBufferMemory
+from langchain_community.chat_message_histories import StreamlitChatMessageHistory
+from langchain_core.prompts import PromptTemplate
+import streamlit as st
 
 
-@cl.on_chat_start
-async def on_chat_start():
-    files = None #Initialize variable to store uploaded files
 
-    # Wait for the user to upload a file
-    while files is None:
-        files = await cl.AskFileMessage(
-            content="Please upload a pdf file to begin!",
-            accept=["application/pdf"],
-            max_size_mb=100,# Optionally limit the file size
-            timeout=180, # Set a timeout for user response,
-        ).send()
+# List of folders to check/create
+folders = ['vector_store', 'data', '.streamlit']
 
-    file = files[0] # Get the first uploaded file
-    print(file) # Print the file object for debugging
-    
-     # Sending an image with the local file path
-    elements = [
+# Check if "data" folder exists
+print('Checking data folder exists or not ')
+if not os.path.exists("data"):
+    # Create "data" folder
+    os.makedirs("data")
+    print("Created 'data' folder")
 
-    ]
-    # Inform the user that processing has started
-    msg = cl.Message(content=f"Processing `{file.name}`...",elements=elements)
-    await msg.send()
+    # Create "vector_store" and "tmp" folders inside "data" folder
+    os.makedirs(os.path.join("data", "vector_store"))
+    os.makedirs(os.path.join("data", "tmp"))
+    print("Created 'vector_store' and 'tmp' folders inside 'data' folder")
+else:
+    print("'data' folder already exists")
+#check if ".streamlit" folder exists
+if not os.path.exists('.streamlit'):
+    os.makedirs('.streamlit')
+    print('Created .Streamlit folder')
+else:
+    print('.streamlit folder already exists')
 
-    # Read the PDF file
-    pdf = PyMuPDFLoader(file_path=file.path)
-    docs = pdf.load()
+secrets_file = os.path.join('.streamlit', 'secrets.toml')
+if not os.path.exists(secrets_file):
+    # Create secrets.toml file
+    os.system(f'touch {secrets_file}')
+    print(f"File '{secrets_file}' created successfully.")
+else:
+    print(f"File '{secrets_file}' already exists.")
 
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=50)
-    chunks = text_splitter.split_documents(documents=docs)
+TMP_DIR = Path(__file__).resolve().parent.joinpath('data', 'tmp')
+LOCAL_VECTOR_STORE_DIR = Path(__file__).resolve().parent.joinpath('data', 'vector_store')
 
-    # Create a metadata for each chunk
-    metadatas = [{"source": f"{i}-pl"} for i in range(len(chunks))]
+st.set_page_config(page_title="Rag - Shubharthak")
+st.title("Chat with Docs/Website")
 
-    # Create a Chroma vector store
-    embeddings = OllamaEmbeddings(model="nomic-embed-text")
-    docsearch = await cl.make_async(FAISS.from_documents(chunks, embeddings=embeddings))
-    docsearch.save_local("vectorstore")
-    
-    
 
-    # Create a chain that uses the Chroma vector store
-    chain = RetrievalQA.from_chain_type(
-        Ollama(model="openchat", temperature=0.0, callbacks=[StreamingStdOutCallbackHandler()]),
-        chain_type="stuff",
-        retriever=docsearch.as_retriever(),
+def save_secrets():
+    with open("./.streamlit/secrets.toml", "w") as file:
+        file.write(f"groq_api_key = \"{st.session_state.groq_api_key}\"")
+
+def load_documents():
+    loader = DirectoryLoader(TMP_DIR.as_posix(), glob='**/*.pdf')
+    documents = loader.load()
+    return documents
+
+def split_documents(documents):
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+    texts = text_splitter.split_documents(documents)
+    return texts
+
+def embeddings_on_local_vectordb(texts):
+    vectordb = Chroma.from_documents(texts, embedding=OllamaEmbeddings(model='nomic-embed-text'),
+                                     persist_directory=LOCAL_VECTOR_STORE_DIR.as_posix())
+    vectordb.persist()
+    retriever = vectordb.as_retriever(search_kwargs={'k': 7})
+    return retriever
+
+def query_llm(retriever, query):
+    qa_chain = ConversationalRetrievalChain.from_llm(
+        llm=ChatGroq(api_key=st.session_state.groq_api_key),
+        retriever=retriever,
         return_source_documents=True,
     )
+    result = qa_chain({'question': query, 'chat_history': st.session_state.messages})
+    result = result['answer']
+    st.session_state.messages.append((query, result))
+    return result
 
-    # Let the user know that the system is ready
-    msg.content = f"Processing `{file.name}` done. You can now ask questions!"
-    await msg.update()
-    #store the chain in user session
-    cl.user_session.set("chain", chain)
-
-
-@cl.on_message
-async def main(message: cl.Message):
-     # Retrieve the chain from user session
-    chain = cl.user_session.get("chain") 
-    #call backs happens asynchronously/parallel 
-    cb = cl.AsyncLangchainCallbackHandler()
-    
-    # call the chain with user's message content
-    res = await chain.ainvoke(message.content, callbacks=[cb])
-    answer = res["answer"]
-    source_documents = res["source_documents"] 
-
-    text_elements = [] # Initialize list to store text elements
-    
-    # Process source documents if available
-    if source_documents:
-        for source_idx, source_doc in enumerate(source_documents):
-            source_name = f"source_{source_idx}"
-            # Create the text element referenced in the message
-            text_elements.append(
-                cl.Text(content=source_doc.page_content, name=source_name)
-            )
-        source_names = [text_el.name for text_el in text_elements]
-        
-         # Add source references to the answer
-        if source_names:
-            answer += f"\nSources: {', '.join(source_names)}"
+def input_fields():
+    #
+    with st.sidebar:
+        if st.secrets.get('groq_api_key'):
+            st.session_state.groq_api_key = st.secrets.groq_api_key
         else:
-            answer += "\nNo sources found"
-    #return results
-    await cl.Message(content=answer, elements=text_elements).send()
+            st.session_state.groq_api_key = st.text_input("Groq API key", type="password")
+            if st.session_state.groq_api_key:
+                save_secrets()
+            
+            
+    # with st.sidebar: 
+    #     if "local" in st.secrets: 
+    #         st.session_state.local = st.secrets.local 
+    #     else:
+    #         st.session_state.local = "local"
+
+    st.session_state.source_docs = st.file_uploader(label="Upload Documents", type="pdf", accept_multiple_files=True)
+    
+
+def process_documents():
+    if not st.session_state.groq_api_key or not st.session_state.source_docs:
+        st.warning(f"Please upload the documents and provide the missing fields.")
+    else:
+        try:
+            for source_doc in st.session_state.source_docs:
+                print('loading...')
+                #
+                with tempfile.NamedTemporaryFile(delete=False, dir=TMP_DIR.as_posix(), suffix='.pdf') as tmp_file:
+                    print('inside tmp 1')
+                    tmp_file.write(source_doc.read())
+                #
+                documents = load_documents()
+                print('loaded docs')
+                #
+                for _file in TMP_DIR.iterdir():
+                    print('inside tmp 2')
+                    temp_file = TMP_DIR.joinpath(_file)
+                    temp_file.unlink()
+                #
+                texts = split_documents(documents)
+                print(texts)
+                #
+                if st.session_state.source_docs:
+                    print('in source')
+                    st.session_state.retriever = embeddings_on_local_vectordb(texts)
+                    st.success(body='Successfully uploaded the data')
+        except Exception as e:
+            st.error(f"An error occurred: {e}")
+
+def boot():
+    #
+    input_fields()
+    #
+    st.button("Submit Documents", on_click=process_documents)
+    #
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    #
+    for message in st.session_state.messages:
+        st.chat_message('human').write(message[0])
+        st.chat_message('ai').write(message[1])    
+    #
+    if query := st.chat_input():
+        st.chat_message("human").write(query)
+        response = query_llm(st.session_state.retriever, query)
+        st.chat_message("ai").write(response)
+
+if __name__ == '__main__':
+    #
+    boot()
+    
