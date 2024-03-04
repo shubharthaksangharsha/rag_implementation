@@ -20,21 +20,25 @@ import psutil
 import sys 
 import warnings
 
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_PROJECT"] = "Default"
+
 # Suppress specific warnings
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore")
+warnings.filterwarnings("module")
 
 def create_dirs(): 
         # Check if "data" folder exists
         print('Checking data folder exists or not ')
-        if not os.path.exists("data"):
+        if not os.path.exists("./pages/data"):
             # Create "data" folder
-            os.makedirs("data")
+            os.makedirs("./pages/data")
             print("Created 'data' folder")
 
             # Create "vector_store" and "tmp" folders inside "data" folder
-            os.makedirs(os.path.join("data", "vector_store"))
-            os.makedirs(os.path.join("data", "tmp"))
+            os.makedirs(os.path.join("./pages/data", "vector_store"))
+            os.makedirs(os.path.join("./pages/data", "tmp"))
             print("Created 'vector_store' and 'tmp' folders inside 'data' folder")
         else:
             print("'data' folder already exists")
@@ -59,7 +63,7 @@ TMP_DIR = Path(__file__).resolve().parent.joinpath('data', 'tmp')
 LOCAL_VECTOR_STORE_DIR = Path(__file__).resolve().parent.joinpath('data', 'vector_store')
 
 st.set_page_config(page_title="Rag - Shubharthak")
-st.title("Chat with Docs/Website")
+st.title("Chat with PDFs")
 
 
 def save_secrets():
@@ -80,13 +84,19 @@ def embeddings_on_local_vectordb(texts, save=False):
     
     if st.session_state.hugging:
         hf = HuggingFaceEmbeddings
-        vectordb = Chroma.from_documents(texts, embedding=HuggingFaceEmbeddings(model_kwargs={'device': 'cpu'}),
+        if st.session_state.save_local:
+            vectordb = Chroma.from_documents(texts, embedding=HuggingFaceEmbeddings(model_kwargs={'device': 'cpu'}),
                                      persist_directory=LOCAL_VECTOR_STORE_DIR.as_posix())
+            vectordb.persist()
+        else:
+            vectordb = Chroma.from_documents(texts, embedding=HuggingFaceEmbeddings(model_kwargs={'device': 'cpu'}))
     else:
-        vectordb = Chroma.from_documents(texts, embedding=OllamaEmbeddings(model='nomic-embed-text'),
+        if st.session_state.save_local:
+            vectordb = Chroma.from_documents(texts, embedding=OllamaEmbeddings(model='nomic-embed-text'),
                                      persist_directory=LOCAL_VECTOR_STORE_DIR.as_posix())
-    if st.session_state.save_local:
-        vectordb.persist()
+        else: 
+            vectordb = Chroma.from_documents(texts, embedding=OllamaEmbeddings(model='nomic-embed-text'))
+        
     retriever = vectordb.as_retriever(search_kwargs={'k': 7})
     return retriever
 
@@ -104,9 +114,10 @@ def query_llm(retriever, query):
         return response 
     
     qa_chain = ConversationalRetrievalChain.from_llm(
-            llm=ChatGroq(api_key=st.session_state.groq_api_key, streaming=True),
+            llm=ChatGroq(api_key=st.session_state.groq_api_key, streaming=True, temperature=0.0, max_tokens=32000),
             retriever=retriever,
-            return_source_documents=True,
+            chain_type='stuff',
+            return_source_documents=False,
     )
     response =  qa_chain.invoke({'question': query, 'chat_history': st.session_state.messages})
     response = response['answer']
@@ -124,10 +135,10 @@ def input_fields():
             st.session_state.groq_api_key = st.text_input("Groq API key", type="password")
             if st.session_state.groq_api_key:
                 save_secrets()
-    st.session_state.local =  st.toggle('Use Local Model: openchat')
     st.session_state.source_docs = st.file_uploader(label="Upload Documents", type="pdf", accept_multiple_files=True)
-    st.session_state.hugging =  st.toggle('HuggingFaceEmbeddings')
-    st.session_state.save_local = st.toggle('Save Docs Locally')
+    st.session_state.local =  st.checkbox('Use Local Model: openchat', help='Use ollama local LLM Model Openchat else it uses Groq Cloud API Model')
+    st.session_state.hugging =  st.checkbox('HuggingFaceEmbeddings', help='Use HuggingFaceEmbeddings else use local Ollama Embeddings')
+    st.session_state.save_local = st.checkbox('Save Docs Locally', help='Save the Persisted VectorStore Locally ')
 
 def process_documents():
     if not st.session_state.groq_api_key or not st.session_state.source_docs:
@@ -160,12 +171,17 @@ def process_documents():
                     st.success(body='Successfully uploaded the data, Now you can chat...')
         except Exception as e:
             st.error(f"An error occurred: {e}")
+
+def clear_history():
+    st.session_state.messages = []
+
 def boot():
     
 
     input_fields()
     #
-    st.button("Submit Documents", on_click=process_documents)
+    button = st.button("Submit Documents", on_click=process_documents)
+        
     
     #
     if "messages" not in st.session_state:
@@ -182,7 +198,8 @@ def boot():
         with st.spinner('Generating Response...'):            
             response = query_llm(st.session_state.retriever, query)
         st.chat_message("ai").markdown(response)
-        
+    
+    st.button('Clear History', on_click=clear_history, type='primary')
 
 if __name__ == '__main__':
     boot()
