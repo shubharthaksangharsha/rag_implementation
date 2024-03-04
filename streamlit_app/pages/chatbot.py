@@ -2,7 +2,7 @@ import os, tempfile
 from pathlib import Path
 from langchain.chains import ConversationChain, LLMChain
 from langchain_community.callbacks import StreamlitCallbackHandler 
-from langchain_community.llms.ollama import Ollama
+from langchain_community.chat_models import ChatOllama
 from langchain.vectorstores import Chroma
 from langchain_groq import ChatGroq
 from langchain_community.document_loaders import DirectoryLoader
@@ -16,15 +16,16 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.callbacks import CallbackManager, StreamingStdOutCallbackHandler
 from langchain_community.utilities.google_serper import GoogleSerperAPIWrapper
 
+#agents modules
+from langchain.agents import AgentType, initialize_agent, load_tools, get_all_tool_names
 
-from langchain.agents import AgentType, initialize_agent, load_tools, Tool
+
+from mytools import *
 import streamlit as st
 from time import sleep 
 import typer 
 import psutil 
-import sys 
 import warnings
-
 
 # Suppress specific warnings
 warnings.filterwarnings("ignore")
@@ -57,18 +58,11 @@ def extract_last_human_message(conversation):
 def generate_response(temperature, query, cb):
     if st.session_state.local:
         llm = Ollama(model='openchat', temperature=temperature)
-        response = ConversationChain(llm=llm, return_final_only=True).invoke(query)
-        response = response['response']
-        
-        st.session_state.messages.append((query, response))
-        return response 
-    
-    llm = ChatGroq(api_key=st.session_state.groq_api_key, streaming=True, temperature=temperature)
-    response = LLMChain(prompt=st.session_state.prompt, llm=llm, return_final_only=True, callbacks=[cb], verbose=False).invoke(input={'question': query})['text']
+    else:
+        llm = ChatGroq(api_key=st.session_state.groq_api_key, streaming=True, temperature=temperature)
+    response = ConversationChain(llm=llm, return_final_only=True).invoke(query)
+    response = response['response']
     return response 
-    # return response.replace('"', '')
-    # for msg in response:
-    #     yield msg["text"]
 
 def input_fields():
     #
@@ -99,7 +93,8 @@ def boot():
         The following is a friendly conversation between a human and an AI. 
         The AI is talkative and provides lots of specific details from its context. 
         If the AI does not know the answer to a question, it truthfully says it does not know.
-                                                                 
+        Messages also contains the history of previous conversation(in a List format) for easy answering. 
+                                                 
         Human:{question}
         AI:""")
         
@@ -111,16 +106,27 @@ def boot():
         st.chat_message('ai').write(message[1])    
     #
     if st.session_state.local:
-        llm = Ollama(model="openchat", callback_manager=CallbackManager([StreamingStdOutCallbackHandler()]))
+        llm = ChatOllama(model="openchat", temperature=st.session_state.temperature, callback_manager=CallbackManager([StreamingStdOutCallbackHandler()]))
     else:
         llm = ChatGroq(api_key=st.session_state.groq_api_key, temperature=st.session_state.temperature, callback_manager=CallbackManager([StreamingStdOutCallbackHandler()]), streaming=True)
-    search = GoogleSerperAPIWrapper(serper_api_key=os.environ.get('SERPAPI_API_KEY'))
-    # tools = [GoogleSerperAPIWrapper(serper_api_key=os.environ.get('SERPAPI_API_KEY')), PythonREPL()]
-    tools = [Tool(name='Intermediate answer', func=search.run, description='useful when you need to ask with internet')]
-    # tools = load_tools(['serpapi', 'python_repl'], llm=llm)
-    agent = initialize_agent(
-        tools=tools, llm=llm, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=True, handle_parsing_errors=True
-    )
+    
+    print(get_all_tool_names())
+    agents = ["zero-shot-react-description", "conversational-react-description",
+           "chat-zero-shot-react-description", "chat-conversational-react-description", 
+           "structured-chat-zero-shot-react-description"]
+    tools = load_tools(
+        ["serpapi", "llm-math", "terminal"], 
+        llm=llm)
+    tools.append(mylocation)
+    tools.append(weather_tool)
+    tools.append(python_tool)
+    tools.append(get_today_date)
+    agent = initialize_agent(   
+        tools=tools, llm=llm, 
+        agent=AgentType(agents[-1]), 
+        verbose=True, 
+        handle_parsing_errors=True)
+    
     if query := st.chat_input():
         if 'exit' in query:
             st.stop()
@@ -130,18 +136,21 @@ def boot():
             with st.chat_message("ai"):
                 st_callback = StreamlitCallbackHandler(st.container())
                 response = agent.run(query, callbacks=[st_callback])
+                
                 st.markdown(response)
-        else:
-            # with st.chat_message("ai"):
-            with st.spinner('Generating Response...'):            
-                st_callback = StreamlitCallbackHandler(st.container())
-                response = generate_response(temperature=st.session_state.temperature,
-                                            query=st.session_state.history, cb=st_callback)
-                print(response)
-                st.markdown(response)
-                st.session_state.history.append(f'AI: {response}')
                 st.session_state.messages.append((query, response))
+        else:
+            with st.chat_message("ai"):
+                with st.spinner('Generating Response...'):            
+                    st_callback = StreamlitCallbackHandler(st.container())
+                    response = generate_response(temperature=st.session_state.temperature,
+                                                query=st.session_state.history, cb=st_callback)
+                    print(response)
+                    st.markdown(response)
+                    st.session_state.history.append(f'AI: {response}')
+                    st.session_state.messages.append((query, response))
     st.button('Clear History', on_click=clear_history)
+    print(len(st.session_state.history))
     
 
 if __name__ == '__main__':
