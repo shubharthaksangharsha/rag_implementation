@@ -12,7 +12,8 @@ import datetime
 @tool 
 def mylocation():
     '''
-    Useful when want to get my current location 
+    Useful when want to get my current location or my location or user location.
+    it is used for openweather api if user ask for current place or location details for weather input.
     '''
     return "Kharar, Punjab, India"
 
@@ -37,6 +38,8 @@ python_tool = Tool(
     func=PythonREPL().run,
     description='useful to execute python code.')
 
+read_tool = ReadFileTool()
+write_tool = WriteFileTool()
 
 if __name__ == '__main__':
     print(get_today_date.name)

@@ -57,7 +57,7 @@ def extract_last_human_message(conversation):
 
 def generate_response(temperature, query, cb):
     if st.session_state.local:
-        llm = Ollama(model='openchat', temperature=temperature)
+        llm = ChatOllama(model='openchat', temperature=temperature)
     else:
         llm = ChatGroq(api_key=st.session_state.groq_api_key, streaming=True, temperature=temperature)
     response = ConversationChain(llm=llm, return_final_only=True).invoke(query)
@@ -115,9 +115,11 @@ def boot():
            "chat-zero-shot-react-description", "chat-conversational-react-description", 
            "structured-chat-zero-shot-react-description"]
     tools = load_tools(
-        ["serpapi", "llm-math", "terminal"], 
+        ["serpapi", "llm-math"], 
         llm=llm)
     tools.append(mylocation)
+    tools.append(read_tool)
+    tools.append(write_tool)
     tools.append(weather_tool)
     tools.append(python_tool)
     tools.append(get_today_date)
@@ -126,6 +128,8 @@ def boot():
         agent=AgentType(agents[-1]), 
         verbose=True, 
         handle_parsing_errors=True)
+    
+    
     
     if query := st.chat_input():
         if 'exit' in query:
@@ -136,7 +140,6 @@ def boot():
             with st.chat_message("ai"):
                 st_callback = StreamlitCallbackHandler(st.container())
                 response = agent.run(query, callbacks=[st_callback])
-                
                 st.markdown(response)
                 st.session_state.messages.append((query, response))
         else:
