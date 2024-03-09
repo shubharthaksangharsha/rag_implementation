@@ -4,6 +4,8 @@ Welcome to Apsara AI, an innovative project powered by Streamlit, Groq, and Olla
 
 Apsara AI features a cutting-edge Chatbot and RAG (Retrieval Augmentation Generation) system designed to enhance conversational experiences and streamline information retrieval from various documents.
 
+![Apsara AI Chatbot](https://github.com/shubharthaksangharsha/rag_implementation/blob/main/streamlit_app/apsara.png "Apsara AI Chatbot")
+
 ## Features
 
 - **Chatbot:** Engage in real-time conversations with Apsara using advanced conversational capabilities powered by Groq and Ollama.
